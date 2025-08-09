@@ -1,5 +1,5 @@
 [package]
-name = "asciinema"
+name = "shAI"
 version = "3.0.0-rc.5"
 edition = "2021"
 authors = ["Marcin Kulik <m@ku1ik.com>"]

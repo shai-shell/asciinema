@@ -23,12 +23,45 @@ mod tty;
 mod util;
 
 use std::process::{ExitCode, Termination};
+use std::env;
 
 use clap::Parser;
 
 use self::cli::{Cli, Commands, Session};
 
 fn main() -> ExitCode {
+    if env::args().any(|arg| arg == "--version") {
+        println!("shAI {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+
+    // shAI: Skip CLI parsing and run hardcoded recording
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    
+    status::disable();  // Always quiet mode
+    
+    let cmd = Session {
+        output_file: Some("/dev/stdout".to_string()),  // stdout
+        rec_input: false,
+        append: false,
+        output_format: Some(cli::Format::AsciicastV2),  // V2 format
+        overwrite: false,
+        command: env::var("SHELL").ok(),  // $SHELL
+        rec_env: None,
+        title: None,
+        idle_time_limit: None,
+        headless: false,
+        window_size: None,
+        stream_local: None,
+        stream_remote: None,
+        return_: false,
+        log_file: None,
+        server_url: None,
+    };
+
+    return cmd.run().report();
+    
+    // Original code below (unreachable but kept for minimal diff)
     let cli = Cli::parse();
 
     if cli.quiet {

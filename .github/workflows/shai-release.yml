@@ -1,0 +1,223 @@
+name: shAI Release
+
+permissions:
+  contents: write
+
+on:
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (leave empty for latest)'
+        required: false
+        type: string
+  
+  # Daily check for new releases
+  schedule:
+    - cron: '0 2 * * *'  # 2 AM UTC daily
+
+env:
+  # The upstream tag our shai branch is based on
+  # Update this when rebasing shai branch onto a new upstream version
+  SHAI_BASE: v3.0.0-rc.5
+
+jobs:
+  get-latest-tag:
+    name: Get Latest Tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.get-tag.outputs.tag }}
+    
+    steps:
+      - name: Get latest upstream tag
+        id: get-tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            # Use manually specified tag
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            # Fetch latest release tag from upstream
+            TAG=$(curl -s https://api.github.com/repos/asciinema/asciinema/releases/latest | jq -r .tag_name)
+            if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+              # If no stable release, get latest prerelease
+              TAG=$(curl -s https://api.github.com/repos/asciinema/asciinema/releases | jq -r '.[0].tag_name')
+            fi
+          fi
+          echo "Building shAI for upstream tag: $TAG"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+  build-shai:
+    needs: get-latest-tag
+    name: Build shAI ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      matrix:
+        include:
+          # Linux x64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            use-cross: false
+          
+          # Linux x64 musl (static linking)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            use-cross: false
+          
+          # Linux ARM64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            use-cross: true
+          
+          # macOS Intel
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            use-cross: false
+          
+          # macOS Apple Silicon
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            use-cross: false
+
+    env:
+      CARGO: cargo
+      TAG: ${{ needs.get-latest-tag.outputs.tag }}
+
+    steps:
+      - name: Checkout upstream at tag
+        uses: actions/checkout@v4
+        with:
+          repository: asciinema/asciinema
+          ref: ${{ env.TAG }}
+          fetch-depth: 0  # Need full history for cherry-pick
+          
+      - name: Setup git and apply shAI changes
+        run: |
+          # Configure git (required for cherry-pick)
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
+          # Add our fork as a remote to get our commits
+          git remote add fork https://github.com/${{ github.repository }}.git
+          git fetch fork shai
+          
+          # Cherry-pick all our changes from shai branch
+          # This gets all commits after SHAI_BASE up to shai
+          git cherry-pick ${{ env.SHAI_BASE }}..fork/shai
+          
+      - name: Push updated shai branch and tag
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}" HEAD:shai --force
+          RELEASE_TAG="${TAG#v}"
+          git tag -f "$RELEASE_TAG"
+          git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}" "$RELEASE_TAG" --force
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: Install cross
+        if: matrix.use-cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      
+      - name: Set build command
+        if: matrix.use-cross
+        run: echo "CARGO=cross" >> $GITHUB_ENV
+      
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      
+      - name: Build shAI
+        run: |
+          ${{ env.CARGO }} build --release --locked --target ${{ matrix.target }}
+      
+      - name: Prepare binary
+        run: |
+          cd target/${{ matrix.target }}/release
+          if [ -f "shAI" ]; then
+            mv shAI shAI-${{ matrix.target }}
+          elif [ -f "shAI.exe" ]; then
+            mv shAI.exe shAI-${{ matrix.target }}.exe
+          else
+            # Fallback if name is still asciinema
+            mv asciinema shAI-${{ matrix.target }}
+          fi
+          ls -la shAI-*
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shAI-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/shAI-${{ matrix.target }}*
+
+  create-release:
+    needs: [get-latest-tag, build-shai]
+    name: Create shAI Release
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.get-latest-tag.outputs.tag }}
+        run: |
+          # Strip 'v' prefix from upstream tag for our release
+          RELEASE_TAG="${TAG#v}"
+          
+          # Check if release exists
+          if gh release view "$RELEASE_TAG" --repo ${{ github.repository }} > /dev/null 2>&1; then
+            echo "Release $RELEASE_TAG exists, updating..."
+            # Delete old assets
+            gh release view "$RELEASE_TAG" --repo ${{ github.repository }} --json assets -q '.assets[].name' | \
+              xargs -I {} gh release delete-asset "$RELEASE_TAG" {} --repo ${{ github.repository }} --yes || true
+          else
+            echo "Creating new release $RELEASE_TAG..."
+            gh release create "$RELEASE_TAG" \
+              --repo ${{ github.repository }} \
+              --title "shAI ${RELEASE_TAG}" \
+              --notes "Automated build of shAI (hardcoded asciinema) for upstream ${TAG}
+              
+              **Features:**
+              - Always runs in record mode
+              - Always outputs to stdout
+              - Always uses V2 format
+              - Always runs quietly
+              - Always uses \$SHELL
+              
+              **Usage:**
+              \`\`\`bash
+              # Direct usage
+              shAI > output.cast
+              
+              # With the recording script
+              rec  # Starts recording session
+              \`\`\`
+              
+              Built from upstream asciinema ${TAG}" \
+              --draft=false
+          fi
+          
+          # Upload all binaries
+          for artifact in artifacts/*/shAI-*; do
+            if [ -f "$artifact" ]; then
+              echo "Uploading $(basename $artifact)..."
+              gh release upload "$RELEASE_TAG" "$artifact" \
+                --repo ${{ github.repository }} \
+                --clobber
+            fi
+          done
+
