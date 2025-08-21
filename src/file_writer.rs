@@ -7,6 +7,7 @@ use crate::asciicast;
 use crate::encoder::Encoder;
 use crate::notifier::Notifier;
 use crate::session::{self, Metadata};
+use crate::record_logger;
 
 pub struct FileWriter {
     writer: Box<dyn AsyncWrite + Send + Unpin>,
@@ -58,6 +59,10 @@ impl FileWriter {
         };
 
         if let Err(e) = self.writer.write_all(&self.encoder.header(&header)).await {
+            record_logger::log_error(&format!(
+                "FileWriter header write error: {} (path unknown, will skip recording)",
+                e
+            ));
             let _ = self
                 .notifier
                 .notify("Write error, session won't be recorded".to_owned())
@@ -85,6 +90,10 @@ impl session::Output for LiveFileWriter {
             Ok(_) => Ok(()),
 
             Err(e) => {
+                record_logger::log_error(&format!(
+                    "FileWriter event write error: {} (recording suspended)",
+                    e
+                ));
                 let _ = self
                     .notifier
                     .notify("Write error, recording suspended".to_owned())

@@ -24,6 +24,7 @@ use crate::forwarder;
 use crate::hash;
 use crate::locale;
 use crate::notifier::{self, BackgroundNotifier, Notifier, NullNotifier};
+use crate::record_logger::RecordLogger;
 use crate::server;
 use crate::session::{self, KeyBindings, Metadata, TermInfo};
 use crate::status;
@@ -370,6 +371,8 @@ impl cli::Session {
         };
 
         let file = self.open_log_file(path)?;
+        // Initialize custom record logger (file will be created if needed)
+        RecordLogger::init(path.as_path())?;
 
         let filter = EnvFilter::builder()
             .with_default_directive(LevelFilter::INFO.into())
@@ -471,7 +474,7 @@ fn capture_env(var_names: Option<String>, config: &config::Recording) -> HashMap
 }
 
 fn get_notifier(config: &Config) -> BackgroundNotifier {
-    let inner = if config.notifications.enabled {
+    let inner = if config.notifications.enabled && RecordLogger::is_enabled() {
         notifier::get_notifier(config.notifications.command.clone())
     } else {
         Box::new(NullNotifier)

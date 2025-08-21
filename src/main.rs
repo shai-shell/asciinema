@@ -18,12 +18,19 @@ mod pty;
 mod server;
 mod session;
 mod status;
+mod record_logger;
 mod stream;
 mod tty;
 mod util;
 
 use std::process::{ExitCode, Termination};
 use std::env;
+use std::path::PathBuf;
+use std::os::unix::net::UnixStream;
+use std::os::unix::io::{AsRawFd};
+use nix::libc;
+use std::io;
+use crate::record_logger::{log_error, RecordLogger};
 
 use clap::Parser;
 
@@ -35,13 +42,58 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // detect --log-file argument
+    let mut log_file: Option<PathBuf> = None;
+    let mut args_iter = env::args().skip(1); // skip program name
+    while let Some(arg) = args_iter.next() {
+        if arg == "--log-file" {
+            if let Some(path) = args_iter.next() {
+                log_file = Some(PathBuf::from(path));
+            }
+        }
+    }
+
+    // SHAI_SOCKET support – redirect STDOUT to Unix socket if provided
+    let socket_path = match env::var("SHAI_SOCKET") {
+        Ok(p) if !p.is_empty() => p,
+        _ => return ExitCode::SUCCESS, // No socket specified -> do nothing
+    };
+
+    let mut output_file: Option<String> = None;
+    {
+        // Attempt to connect to the socket, exit on failure
+        match UnixStream::connect(&socket_path) {
+            Ok(stream) => {
+                // Duplicate socket fd onto STDOUT so encoder keeps writing to fd 1
+                let fd = stream.as_raw_fd();
+                let res = unsafe { libc::dup2(fd, libc::STDOUT_FILENO) };
+                if res == -1 {
+                    let e = io::Error::last_os_error();
+                    if RecordLogger::is_enabled() {
+                        log_error(&format!("dup2 failed for SHAI_SOCKET: {}", e));
+                    }
+                    return ExitCode::from(1);
+                }
+                // Keep the stream alive
+                std::mem::forget(stream);
+
+                // We'll configure session to write to stdout (now a Unix socket)
+                output_file = Some("/dev/stdout".to_string());
+            }
+            Err(e) => {
+                if RecordLogger::is_enabled() {
+                    log_error(&format!("Unable to connect to SHAI_SOCKET ({}): {}", socket_path, e));
+                }
+                return ExitCode::from(1);
+            }
+        }
+    }
+
     // shAI: Skip CLI parsing and run hardcoded recording
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    
     status::disable();  // Always quiet mode
     
     let cmd = Session {
-        output_file: Some("/dev/stdout".to_string()),  // stdout
+        output_file,  // None unless socket connected
         rec_input: false,
         append: false,
         output_format: Some(cli::Format::AsciicastV2),  // V2 format
@@ -55,7 +107,7 @@ fn main() -> ExitCode {
         stream_local: None,
         stream_remote: None,
         return_: false,
-        log_file: None,
+        log_file,
         server_url: None,
     };
 

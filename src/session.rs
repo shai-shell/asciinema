@@ -18,6 +18,7 @@ use crate::notifier::Notifier;
 use crate::pty::{self, Pty};
 use crate::tty::{Tty, TtySize, TtyTheme};
 use crate::util::Utf8Decoder;
+use crate::record_logger;
 
 const BUF_SIZE: usize = 128 * 1024;
 
@@ -249,11 +250,37 @@ impl<N: Notifier> Session<N> {
 
             if pause_key.is_some_and(|key| data == key) {
                 if let Some(pt) = self.pause_time {
+                    // Compute how long the session was paused before resuming
+                    let paused_for = self.elapsed_time() - pt;
+
                     self.pause_time = None;
-                    self.time_offset += self.elapsed_time() - pt;
+                    self.time_offset += paused_for;
+
+                    let msg = format!(
+                        "Recording resumed after {}µs pause (elapsed={}µs, time_offset={}µs, record_input={}, tty_size={{cols:{},rows:{}}})",
+                        paused_for,
+                        self.elapsed_time(),
+                        self.time_offset,
+                        self.record_input,
+                        self.tty_size.0,
+                        self.tty_size.1
+                    );
+
+                    record_logger::log_info(&msg);
                     self.notify("Resumed recording").await;
                 } else {
-                    self.pause_time = Some(self.elapsed_time());
+                    let paused_at = self.elapsed_time();
+                    self.pause_time = Some(paused_at);
+
+                    let msg = format!(
+                        "Recording paused at elapsed={}µs (record_input={}, tty_size={{cols:{},rows:{}}})",
+                        paused_at,
+                        self.record_input,
+                        self.tty_size.0,
+                        self.tty_size.1
+                    );
+
+                    record_logger::log_warn(&msg);
                     self.notify("Paused recording").await;
                 }
 
