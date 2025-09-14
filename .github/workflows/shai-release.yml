@@ -112,8 +112,12 @@ jobs:
         run: |
           git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}" HEAD:shai --force
           RELEASE_TAG="${TAG#v}"
-          git tag -f "$RELEASE_TAG"
-          git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}" "$RELEASE_TAG" --force
+          # Delete the tag locally and remotely if it exists
+          git tag -d "$RELEASE_TAG" 2>/dev/null || true
+          git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}" :refs/tags/"$RELEASE_TAG" 2>/dev/null || true
+          # Create new tag at current HEAD (which has the shai changes)
+          git tag "$RELEASE_TAG"
+          git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}" "$RELEASE_TAG"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -181,15 +185,16 @@ jobs:
           # Check if release exists
           if gh release view "$RELEASE_TAG" --repo ${{ github.repository }} > /dev/null 2>&1; then
             echo "Release $RELEASE_TAG exists, updating..."
-            # Delete old assets
-            gh release view "$RELEASE_TAG" --repo ${{ github.repository }} --json assets -q '.assets[].name' | \
-              xargs -I {} gh release delete-asset "$RELEASE_TAG" {} --repo ${{ github.repository }} --yes || true
-          else
-            echo "Creating new release $RELEASE_TAG..."
-            gh release create "$RELEASE_TAG" \
-              --repo ${{ github.repository }} \
-              --title "shAI ${RELEASE_TAG}" \
-              --notes "Automated build of shAI (hardcoded asciinema) for upstream ${TAG}
+            # Delete the existing release completely
+            gh release delete "$RELEASE_TAG" --repo ${{ github.repository }} --yes
+          fi
+          
+          # Always create a fresh release at the new tag
+          echo "Creating release $RELEASE_TAG..."
+          gh release create "$RELEASE_TAG" \
+            --repo ${{ github.repository }} \
+            --title "shAI ${RELEASE_TAG}" \
+            --notes "Automated build of shAI (hardcoded asciinema) for upstream ${TAG}
               
               **Features:**
               - Always runs in record mode
