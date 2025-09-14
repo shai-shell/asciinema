@@ -182,14 +182,13 @@ jobs:
           # Strip 'v' prefix from upstream tag for our release
           RELEASE_TAG="${TAG#v}"
           
-          # Check if release exists
+          # Check if release exists and delete it
           if gh release view "$RELEASE_TAG" --repo ${{ github.repository }} > /dev/null 2>&1; then
-            echo "Release $RELEASE_TAG exists, updating..."
-            # Delete the existing release completely
+            echo "Release $RELEASE_TAG exists, deleting..."
             gh release delete "$RELEASE_TAG" --repo ${{ github.repository }} --yes
           fi
           
-          # Always create a fresh release at the new tag
+          # Create a fresh release at the new tag
           echo "Creating release $RELEASE_TAG..."
           gh release create "$RELEASE_TAG" \
             --repo ${{ github.repository }} \
@@ -214,7 +213,6 @@ jobs:
               
               Built from upstream asciinema ${TAG}" \
               --draft=false
-          fi
           
           # Upload all binaries
           for artifact in artifacts/*/shAI-*; do
