@@ -202,11 +202,32 @@ impl cli::Session {
         metadata: &Metadata,
         notifier: N,
     ) -> Result<Option<FileWriter>> {
-        let Some(path) = self.output_file.as_ref() else {
+        let Some(path_str) = self.output_file.as_ref() else {
             return Ok(None);
         };
 
-        let path = Path::new(path);
+        // Special case: write directly to a Unix socket (without redirecting stdout)
+        if let Some(p) = path_str.strip_prefix("unix://") {
+            let stream = tokio::net::UnixStream::connect(p)
+                .await
+                .map_err(|e| anyhow!("cannot connect to unix socket {}: {}", p, e))?;
+            let (_r, w) = stream.into_split();
+            let writer: Box<dyn tokio::io::AsyncWrite + Send + Unpin> = Box::new(w);
+            let notifier = Box::new(notifier);
+            let format = self
+                .output_format
+                .unwrap_or(Format::AsciicastV3);
+            let encoder = self.get_encoder(format, Path::new("unix://"), false)?;
+
+            return Ok(Some(FileWriter::new(
+                writer,
+                encoder,
+                notifier,
+                metadata.clone(),
+            )));
+        }
+
+        let path = Path::new(path_str);
         let (overwrite, append) = self.get_file_mode(path)?;
         let file = self.open_output_file(path, overwrite, append).await?;
         let format = self.get_file_format(path, append)?;

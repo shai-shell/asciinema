@@ -26,11 +26,7 @@ mod util;
 use std::process::{ExitCode, Termination};
 use std::env;
 use std::path::PathBuf;
-use std::os::unix::net::UnixStream;
-use std::os::unix::io::{AsRawFd};
-use nix::libc;
-use std::io;
-use crate::record_logger::{log_error, RecordLogger};
+ 
 
 use clap::Parser;
 
@@ -58,36 +54,7 @@ fn main() -> ExitCode {
         Ok(p) if !p.is_empty() => p,
         _ => return ExitCode::SUCCESS, // No socket specified -> do nothing
     };
-
-    let mut output_file: Option<String> = None;
-    {
-        // Attempt to connect to the socket, exit on failure
-        match UnixStream::connect(&socket_path) {
-            Ok(stream) => {
-                // Duplicate socket fd onto STDOUT so encoder keeps writing to fd 1
-                let fd = stream.as_raw_fd();
-                let res = unsafe { libc::dup2(fd, libc::STDOUT_FILENO) };
-                if res == -1 {
-                    let e = io::Error::last_os_error();
-                    if RecordLogger::is_enabled() {
-                        log_error(&format!("dup2 failed for SHAI_SOCKET: {}", e));
-                    }
-                    return ExitCode::from(1);
-                }
-                // Keep the stream alive
-                std::mem::forget(stream);
-
-                // We'll configure session to write to stdout (now a Unix socket)
-                output_file = Some("/dev/stdout".to_string());
-            }
-            Err(e) => {
-                if RecordLogger::is_enabled() {
-                    log_error(&format!("Unable to connect to SHAI_SOCKET ({}): {}", socket_path, e));
-                }
-                return ExitCode::from(1);
-            }
-        }
-    }
+    let output_file: Option<String> = Some(format!("unix://{}", socket_path));
 
     // shAI: Skip CLI parsing and run hardcoded recording
     status::disable();  // Always quiet mode

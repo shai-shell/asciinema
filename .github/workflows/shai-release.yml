@@ -4,6 +4,10 @@ permissions:
   contents: write
 
 on:
+  # Trigger on pushes to shai branch
+  push:
+    branches: ["shai"]
+  
   # Manual trigger
   workflow_dispatch:
     inputs:
@@ -11,10 +15,6 @@ on:
         description: 'Tag to build (leave empty for latest)'
         required: false
         type: string
-  
-  # Daily check for new releases
-  schedule:
-    - cron: '0 2 * * *'  # 2 AM UTC daily
 
 env:
   # The upstream tag our shai branch is based on
